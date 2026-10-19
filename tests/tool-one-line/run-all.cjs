@@ -22,7 +22,7 @@ const TUI = path.join(TESTS, "tui");
 const wantTui = process.argv.includes("--tui");
 const wantReload = process.argv.includes("--with-reload");
 
-const HARNESS = ["thinking-only.mjs", "segments.mjs", "streaming.mjs", "turns.mjs", "repro.cjs", "lastcomponent.mjs", "fuzz.mjs"];
+const HARNESS = ["thinking-only.mjs", "user-message.mjs", "segments.mjs", "streaming.mjs", "turns.mjs", "repro.cjs", "lastcomponent.mjs", "fuzz.mjs"];
 const TUI_SUITES = [
 	{ file: "suiteA.cjs", name: "展开/收回与行距" },
 	{ file: "suiteD.cjs", name: "Thinking 行展开/收回" },

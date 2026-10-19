@@ -270,29 +270,19 @@ type ThemeLike = Record<string, any>;
  * 只剩 ANSI 序列，`Text.render()` 用 `text.trim() === ""` 判空，转义序列让这个判断不成立，
  * 于是每条思考白占一行。
  *
- * 主题里所有「把文本装饰成 ANSI」的方法都以文本作为最后一个字符串参数（`fg`/`bg` 的文本在
- * 颜色之后），按这个形状识别而不是枚举方法名：枚举会漏掉 `bg` 这类同类方法，内核新增
- * 装饰器时还得再改一次。只有文本为空白时才返回空串，其余调用原样转发。
+ * 只处理不画背景的装饰方法，且只跳过「恰好为空串」的调用：
+ * - `bg` / `style` 不能碰：内核给用户消息的每一行（含补齐到整宽的空格）套 `userMessageBg`，
+ *   返回空串会抹掉整行背景，一条消息被切成几截，空行处露出底色。
+ * - 纯空白串也不能碰：同理，背景是加在补齐后的整行上的，空白正是要靠它上色。
  */
-function guardEmptyThemeText(target: ThemeLike): void {
-	if (target.emptyTextPatched) return;
-	for (const name of Object.getOwnPropertyNames(target)) {
-		// `constructor` 也是函数，替换它会破坏原型；装饰器不会叫这个名字
-		if (name === "constructor") continue;
-		const descriptor = Object.getOwnPropertyDescriptor(target, name);
-		if (!descriptor || typeof descriptor.value !== "function") continue;
-		const original = descriptor.value as (...args: unknown[]) => unknown;
-		target[name] = function (...args: unknown[]) {
-			for (let index = args.length - 1; index >= 0; index--) {
-				const arg = args[index];
-				if (typeof arg !== "string") continue;
-				if (arg.trim() === "") return "";
-				break;
-			}
-			return original.apply(this, args);
-		};
-	}
-	Object.defineProperty(target, "emptyTextPatched", { value: true, configurable: true });
+const EMPTY_TEXT_METHODS = ["fg", "bold", "italic", "underline", "inverse", "strikethrough"];
+
+function guardEmptyThemeMethod(target: ThemeLike, method: string, original: (...args: unknown[]) => unknown): void {
+	target[method] = function (...args: unknown[]) {
+		const text = method === "fg" ? args[1] : args[0];
+		if (text === "") return "";
+		return original.apply(this, args);
+	};
 }
 
 /**
@@ -303,8 +293,20 @@ function patchEmptyThemeText(): void {
 	const theme = (globalThis as Record<symbol, unknown>)[THEME_KEY] as ThemeLike | undefined;
 	if (!theme) return;
 	const proto = Object.getPrototypeOf(theme) as ThemeLike | null;
-	if (proto && proto !== Object.prototype) guardEmptyThemeText(proto);
-	guardEmptyThemeText(theme);
+	if (proto && !proto.emptyTextPatched) {
+		for (const method of EMPTY_TEXT_METHODS) {
+			const original = proto[method];
+			if (typeof original === "function") guardEmptyThemeMethod(proto, method, original);
+		}
+		proto.emptyTextPatched = true;
+	}
+	if (theme.emptyTextPatched) return;
+	for (const method of EMPTY_TEXT_METHODS) {
+		const original = theme[method];
+		if (typeof original !== "function") continue;
+		guardEmptyThemeMethod(theme, method, original);
+	}
+	theme.emptyTextPatched = true;
 }
 
 /**
