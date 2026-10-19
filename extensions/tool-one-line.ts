@@ -18,6 +18,17 @@
  *
  * 只注册渲染器，不重注册工具：`execute`、`description`、`parameters`、
  * 输出截断策略都留在内核手里，模型收到的 `result.content` 与未安装本扩展时完全一致。
+ *
+ * ## 三处内核补丁的出处
+ *
+ * 均按 pi 1.3.0 的内核实现核对（本仓库开发时的版本）；上游既无对应修复，也未提 issue，
+ * 所以只能在本扩展里打补丁。升级 pi 后若折叠态又开始出现空行、或标签突然不生效，按这三条核对：
+ * - 隐藏思考标签置空后仍占一行：`dist/modes/interactive/components/assistant-message.js`
+ *   用 `new Text(theme.italic(theme.fg(...)))` 画标签，而 `Text.render()` 用 `trim() === ""` 判空。
+ * - 0 行内容旁边留下 `Spacer(1)`：同一文件里的 `contentContainer`。
+ * - CLI 把 pi-tui 内联进 bundle，扩展 `import` 到的类与内核实际使用的不是同一个：
+ *   `dist/modes/interactive/components/tool-execution.js` 的 self 外壳。
+ * 补丁失效时不会报错，只会在会话内首次发生异常时提示一次（见 `reportOnce`）。
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -75,6 +86,14 @@ interface RunState {
 	tui?: { requestRender?: (force?: boolean) => void };
 }
 
+/**
+ * 会话级单例：TUI 模式下同时只会有一个会话，因此不按会话分桶。
+ * 多会话共存的模式（RPC 的 new_session 会先结束旧会话）不在支持范围内；
+ * 渲染上下文里也没有会话标识，无法在 `renderCall` 中区分。
+ * 按 callId 建索引的几张表与 transcript 同量级（内核本身也持有这些行），
+ * 因此在 `session_start`/`session_shutdown` 两个口子上整体丢弃即可。
+ */
+
 const state: RunState = {
 	current: undefined,
 	pendingThinkingTexts: [],
@@ -98,9 +117,32 @@ function resetRuns(): void {
 	state.thinkingExpanded.clear();
 	state.baseCallByCall.clear();
 	state.baseResultByCall.clear();
+	state.invalidateByCall.clear();
+	state.coreByTool.clear();
 	state.textClosedFor = undefined;
+	state.thinkingCountedFor = undefined;
 	state.runByLeader.clear();
 	state.runByCall.clear();
+	reported.clear();
+}
+
+/** 同一条故障每次会话只说一次：渲染路径会被高频调用，重复提示会淹没对话。 */
+const reported = new Set<string>();
+
+/**
+ * 捕获的异常统一在这里落地一次。默认只弹一条 warning，不写文件；
+ * 需要细节时设 `TOOL_ONE_LINE_DEBUG=1`，把原始异常打到 stderr。
+ */
+function reportOnce(key: string, reason: string, error?: unknown): void {
+	if (reported.has(key)) return;
+	reported.add(key);
+	const detail = error instanceof Error ? `${reason}：${error.message}` : reason;
+	if (process.env.TOOL_ONE_LINE_DEBUG) console.error(`[tool-one-line] ${key} — ${detail}`, error);
+	try {
+		state.ctx?.ui?.notify?.(`tool-one-line: ${detail}`, "warning");
+	} catch {
+		// 非 TUI 模式（print/json/rpc）可能没有可用的通知端，日志已经尽力
+	}
 }
 
 /**
@@ -115,8 +157,9 @@ function labelOf(pi: ExtensionAPI, toolName: string): string {
 	try {
 		const info = pi.getAllTools().find((tool) => tool.name === toolName);
 		core = info?.sourceInfo.path === `builtin:${toolName}`;
-	} catch {
+	} catch (error) {
 		// 拿不到工具清单时按核心工具处理：显示自身名字比压成同一个词更不容易误导
+		reportOnce("tools", "读不到工具清单，核心工具按名字显示", error);
 	}
 	state.coreByTool.set(toolName, core);
 	return core ? titleOf(toolName) : DESIGN.otherToolLabel;
@@ -352,12 +395,15 @@ function patchCoreContainer(ctx: ExtensionContext): void {
 			state.tui = tui as RunState["tui"];
 			return { render: () => [], invalidate() {} };
 		});
-	} catch {
+	} catch (error) {
 		// 拿不到内核实例就只保留对外部 pi-tui 的补丁
+		reportOnce("patch-container", "拿不到内核 TUI 实例，空行补丁可能只在外部 pi-tui 上生效", error);
 	} finally {
 		try {
 			ctx.ui.setWidget(key, undefined);
-		} catch {}
+		} catch {
+			// 清不掉探针 widget 只影响一行空白，不影响渲染，保持静默
+		}
 	}
 }
 
@@ -457,25 +503,27 @@ function withBaseComponent<T extends { toolCallId: string }>(context: T, cache: 
 	return { ...context, lastComponent: cache.get(context.toolCallId) };
 }
 
-function nativeCall(base: any, args: unknown, theme: Theme, context: any): Component | undefined {
+function nativeCall(base: any, args: unknown, theme: Theme, context: any, toolName: string): Component | undefined {
 	if (!base?.renderCall) return undefined;
 	try {
 		const component = base.renderCall(args, theme, withBaseComponent(context, state.baseCallByCall));
 		state.baseCallByCall.set(context.toolCallId, component);
 		return component;
-	} catch {
+	} catch (error) {
 		// 参数异常时退回我们自己的标签，不要让内核用 `bash command: ...` 兜底
+		reportOnce(`native-call:${toolName}`, `内核 renderCall 抛错（${toolName}），该行改用单条标签`, error);
 		return undefined;
 	}
 }
 
-function nativeResult(base: any, result: unknown, options: unknown, theme: Theme, context: any): Component | undefined {
+function nativeResult(base: any, result: unknown, options: unknown, theme: Theme, context: any, toolName: string): Component | undefined {
 	if (!base?.renderResult) return undefined;
 	try {
 		const component = base.renderResult(result, options, theme, withBaseComponent(context, state.baseResultByCall));
 		state.baseResultByCall.set(context.toolCallId, component);
 		return component;
-	} catch {
+	} catch (error) {
+		reportOnce(`native-result:${toolName}`, `内核 renderResult 抛错（${toolName}），输出退回纯文本`, error);
 		return undefined;
 	}
 }
@@ -583,8 +631,9 @@ function reconstructRuns(ctx: ExtensionContext): void {
 				if (run) run.endedAt = timestamp;
 			}
 		}
-	} catch {
+	} catch (error) {
 		// 历史读不出来就退回逐条标签显示，不影响实时聚合
+		reportOnce("history", "历史会话解析失败，过去的工具调用退回逐条标签", error);
 		resetRuns();
 	}
 	if (state.current) state.current.endedAt = lastTimestamp ?? Date.now();
@@ -597,8 +646,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		state.ctx = ctx;
-		patchCoreContainer(ctx);
+		// 先清空上一会话的残留，再打补丁：补丁失败时的提示不会随即被清掉
 		reconstructRuns(ctx);
+		patchCoreContainer(ctx);
 		syncThinkingLabel();
 	});
 
@@ -622,6 +672,13 @@ export default function (pi: ExtensionAPI) {
 		state.textClosedFor = undefined;
 		stopRunTicker();
 		forceRepaint();
+	});
+
+	// 会话结束即丢弃本轮所有索引与缓存：否则切会话/退出后仍留着上一轮的组件与重绘回调
+	pi.on("session_shutdown", async () => {
+		stopRunTicker();
+		resetRuns();
+		state.ctx = undefined;
 	});
 
 	// 流式阶段就归段：不等 message_end，工具行一出现就知道自己属于哪一段，
@@ -676,7 +733,7 @@ export default function (pi: ExtensionAPI) {
 				if (!run) {
 					// 参数还在流式输出时不要画标签，否则摘要下面会闪出一行 `Bash...`；
 					// 历史导出等真正无法归段的调用才退回单条标签。
-					if (context.expanded) return nativeCall(base, args, theme, context) ?? new Container();
+					if (context.expanded) return nativeCall(base, args, theme, context, toolName) ?? new Container();
 					if (!context.argsComplete) return new Container();
 					const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
 					return label;
@@ -685,7 +742,7 @@ export default function (pi: ExtensionAPI) {
 				const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
 				const isLeader = run.leaderCallId === context.toolCallId;
 				// 首条的原生渲染也受本轮展开控制：否则收起摘要时它自己的输出会留在屏上
-				const native = context.expanded && (!isLeader || run.expanded) ? nativeCall(base, args, theme, context) : undefined;
+				const native = context.expanded && (!isLeader || run.expanded) ? nativeCall(base, args, theme, context, toolName) : undefined;
 
 				if (isLeader) {
 					// 首条：摘要行常驻，展开后依次是思考行、它自己的条目行和原生渲染
@@ -707,7 +764,7 @@ export default function (pi: ExtensionAPI) {
 				if (!options.expanded) return new Container();
 				const run = state.runByCall.get(context.toolCallId);
 				if (run && !run.expanded) return new Container();
-				return nativeResult(base, result, options, theme, context) ?? textOf(result, theme, context.outputPad);
+				return nativeResult(base, result, options, theme, context, toolName) ?? textOf(result, theme, context.outputPad);
 			},
 		};
 	});
