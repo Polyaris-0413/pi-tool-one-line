@@ -31,6 +31,7 @@ const render = (callId, argsComplete = true) =>
 	renderers
 		.renderCall({ command: "ls" }, theme, {
 			toolCallId: callId,
+			outputPad: 0,
 			expanded: false,
 			argsComplete,
 			lastComponent: undefined,

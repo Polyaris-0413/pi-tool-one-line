@@ -56,6 +56,7 @@ const emitEnd = async (message, extra = {}) => emit("message_end", { message, ..
 function renderLines(callId, expanded = false) {
 	const c = renderers.renderCall({ command: "ls" }, theme, {
 		toolCallId: callId,
+		outputPad: 0,
 		expanded,
 		argsComplete: true,
 		lastComponent: undefined,
@@ -75,6 +76,7 @@ function collapsedSummary(callId) {
 function clickSummary(callId) {
 	const c = renderers.renderCall({ command: "ls" }, theme, {
 		toolCallId: callId,
+		outputPad: 0,
 		expanded: false,
 		argsComplete: true,
 		lastComponent: undefined,

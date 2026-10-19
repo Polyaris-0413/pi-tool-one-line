@@ -23,9 +23,18 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 
-/** 核心工具之外的统一标签；改这一行即可换词。 */
-const OTHER_TOOL_LABEL = "Tool";
-const SEPARATOR = " · ";
+/**
+ * 最小设计源：本扩展输出的固定文案。颜色一律引用 pi 主题 token，不在此定义。
+ * 代码只引用这里的取值，不内联字面量。
+ */
+const DESIGN = {
+	/** 非核心工具（扩展、MCP、SDK 注册的工具）的统称。 */
+	otherToolLabel: "Tool",
+	/** 条目行标签后缀，表示该行可展开。 */
+	toolLabelSuffix: "...",
+	thinking: { summaryLabel: "Thinking", rowLabel: "Thinking..." },
+	summary: { separator: " · ", countPrefix: "×" },
+} as const;
 
 /** 主题实例挂在这个全局符号上，跨打包边界共享（内核与扩展看到同一对象）。 */
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme");
@@ -101,7 +110,7 @@ function resetRuns(): void {
  */
 function labelOf(pi: ExtensionAPI, toolName: string): string {
 	const cached = state.coreByTool.get(toolName);
-	if (cached !== undefined) return cached ? titleOf(toolName) : OTHER_TOOL_LABEL;
+	if (cached !== undefined) return cached ? titleOf(toolName) : DESIGN.otherToolLabel;
 	let core = true;
 	try {
 		const info = pi.getAllTools().find((tool) => tool.name === toolName);
@@ -110,7 +119,7 @@ function labelOf(pi: ExtensionAPI, toolName: string): string {
 		// 拿不到工具清单时按核心工具处理：显示自身名字比压成同一个词更不容易误导
 	}
 	state.coreByTool.set(toolName, core);
-	return core ? titleOf(toolName) : OTHER_TOOL_LABEL;
+	return core ? titleOf(toolName) : DESIGN.otherToolLabel;
 }
 
 function titleOf(toolName: string): string {
@@ -188,13 +197,14 @@ function attachThinking(calls: Array<{ id: string }>): void {
 	state.pendingThinkingTexts = [];
 }
 
-/** 摘要行：按时间顺序聚合，思考在前、工具调用在后，末尾是这一轮的实际耗时。 */
+/** 摘要行末尾的耗时算到本段真正结束（下一条文字出现或本轮结束），而不是最后一条工具结束。 */
 function summaryText(pi: ExtensionAPI, run: Run, theme: Theme): string {
 	const parts: string[] = [];
 	// 计数直接来自已挂到调用行上的思考正文：摘要与展开列表不会对不上
 	const thinkingRows = run.callIds.reduce((sum, callId) => sum + (state.thinkingByCall.get(callId)?.length ?? 0), 0);
 	if (thinkingRows > 0) {
-		parts.push(`${theme.italic(theme.fg("thinkingText", "Thinking"))} ${theme.fg("dim", `×${thinkingRows}`)}`);
+		const label = theme.italic(theme.fg("thinkingText", DESIGN.thinking.summaryLabel));
+		parts.push(`${label} ${theme.fg("dim", `${DESIGN.summary.countPrefix}${thinkingRows}`)}`);
 	}
 	const counts = new Map<string, number>();
 	for (const toolName of run.toolNames) {
@@ -202,55 +212,56 @@ function summaryText(pi: ExtensionAPI, run: Run, theme: Theme): string {
 		counts.set(label, (counts.get(label) ?? 0) + 1);
 	}
 	for (const [label, count] of counts) {
-		parts.push(`${theme.italic(theme.fg("thinkingText", label))} ${theme.fg("dim", `×${count}`)}`);
+		parts.push(`${theme.italic(theme.fg("thinkingText", label))} ${theme.fg("dim", `${DESIGN.summary.countPrefix}${count}`)}`);
 	}
 	// 只有本段已封口才停在 endedAt；否则最后一条工具一结束计时器就冻住
 	const end = state.current === run ? Date.now() : (run.endedAt ?? Date.now());
 	parts.push(theme.fg("dim", formatDuration(end - run.startedAt)));
-	return parts.join(theme.fg("dim", SEPARATOR));
+	return parts.join(theme.fg("dim", DESIGN.summary.separator));
 }
-
-/**
- * 内核用 `new Text(theme.italic(theme.fg(token, label)))` 画折叠的思考块。
- * 标签置空后剩下的只是 ANSI 序列，`Text.render()` 用 `text.trim() === ""` 判空，
- * 转义序列让这个判断不成立，于是每条思考白占一行。
- * 这里只让「空字符串」跳过装饰，其它文本一律原样返回。
- */
-/** 空字符串不需要装饰；内核的 `Text` 靠 `trim() === ""` 判空，带上转义序列就会白占一行。 */
-const EMPTY_TEXT_METHODS = ["fg", "bold", "italic", "underline", "inverse", "strikethrough"];
 
 type ThemeLike = Record<string, any>;
 
-function guardEmptyThemeMethod(target: ThemeLike, method: string, original: (...args: unknown[]) => unknown): void {
-	target[method] = function (...args: unknown[]) {
-		const text = method === "fg" ? args[1] : args[0];
-		if (text === "") return "";
-		return original.apply(this, args);
-	};
+/**
+ * 内核用 `new Text(theme.italic(theme.fg(token, label)))` 画折叠的思考块。标签置空后
+ * 只剩 ANSI 序列，`Text.render()` 用 `text.trim() === ""` 判空，转义序列让这个判断不成立，
+ * 于是每条思考白占一行。
+ *
+ * 主题里所有「把文本装饰成 ANSI」的方法都以文本作为最后一个字符串参数（`fg`/`bg` 的文本在
+ * 颜色之后），按这个形状识别而不是枚举方法名：枚举会漏掉 `bg` 这类同类方法，内核新增
+ * 装饰器时还得再改一次。只有文本为空白时才返回空串，其余调用原样转发。
+ */
+function guardEmptyThemeText(target: ThemeLike): void {
+	if (target.emptyTextPatched) return;
+	for (const name of Object.getOwnPropertyNames(target)) {
+		// `constructor` 也是函数，替换它会破坏原型；装饰器不会叫这个名字
+		if (name === "constructor") continue;
+		const descriptor = Object.getOwnPropertyDescriptor(target, name);
+		if (!descriptor || typeof descriptor.value !== "function") continue;
+		const original = descriptor.value as (...args: unknown[]) => unknown;
+		target[name] = function (...args: unknown[]) {
+			for (let index = args.length - 1; index >= 0; index--) {
+				const arg = args[index];
+				if (typeof arg !== "string") continue;
+				if (arg.trim() === "") return "";
+				break;
+			}
+			return original.apply(this, args);
+		};
+	}
+	Object.defineProperty(target, "emptyTextPatched", { value: true, configurable: true });
 }
 
 /**
- * `/reload` 会换掉主题实例（新实例没有旧补丁），所以既要补原型（覆盖之后新建的实例），
- * 也要在渲染前兑现一次当前实例，否则隐藏的思考块会重新变回一行的转义序列。
+ * `/reload` 会换掉主题实例（新实例没有旧补丁），所以原型和当前实例都要补：
+ * 原型覆盖之后新建的实例，实例兜住自身挂载的方法。
  */
 function patchEmptyThemeText(): void {
 	const theme = (globalThis as Record<symbol, unknown>)[THEME_KEY] as ThemeLike | undefined;
 	if (!theme) return;
 	const proto = Object.getPrototypeOf(theme) as ThemeLike | null;
-	if (proto && !proto.emptyTextPatched) {
-		for (const method of EMPTY_TEXT_METHODS) {
-			const original = proto[method];
-			if (typeof original === "function") guardEmptyThemeMethod(proto, method, original);
-		}
-		proto.emptyTextPatched = true;
-	}
-	if (theme.emptyTextPatched) return;
-	for (const method of EMPTY_TEXT_METHODS) {
-		const original = theme[method];
-		if (typeof original !== "function") continue;
-		guardEmptyThemeMethod(theme, method, original);
-	}
-	theme.emptyTextPatched = true;
+	if (proto && proto !== Object.prototype) guardEmptyThemeText(proto);
+	guardEmptyThemeText(theme);
 }
 
 /**
@@ -366,18 +377,20 @@ class TurnSummary implements Component {
 	private readonly pi: ExtensionAPI;
 	private readonly run: Run;
 	private readonly theme: Theme;
+	private readonly outputPad: number;
 	/** 内核注入的重绘入口；不能叫 invalidate，否则会覆盖组件生命周期方法并形成失效递归。 */
 	private readonly requestInvalidate: () => void;
 
-	constructor(pi: ExtensionAPI, run: Run, theme: Theme, requestInvalidate: () => void) {
+	constructor(pi: ExtensionAPI, run: Run, theme: Theme, requestInvalidate: () => void, outputPad: number) {
 		this.pi = pi;
 		this.run = run;
 		this.theme = theme;
 		this.requestInvalidate = requestInvalidate;
+		this.outputPad = outputPad;
 	}
 
 	render(width: number): string[] {
-		return new Text(summaryText(this.pi, this.run, this.theme), 0, 0).render(width);
+		return new Text(summaryText(this.pi, this.run, this.theme), this.outputPad, 0).render(width);
 	}
 
 	invalidate(): void {}
@@ -394,24 +407,27 @@ class TurnSummary implements Component {
 	}
 }
 
-/** 展开后条目列表里的 `Thinking...` 行；点一下展开该段思考正文。 */
+/** 展开后条目列表里的思考行；点一下展开该段思考正文，正文沿用内核的 thinkingText token。 */
 class ThinkingRow implements Component {
 	private readonly text: string;
 	private readonly theme: Theme;
 	private readonly key: string;
+	private readonly outputPad: number;
 	private readonly requestInvalidate: () => void;
 
-	constructor(text: string, theme: Theme, key: string, requestInvalidate: () => void) {
+	constructor(text: string, theme: Theme, key: string, requestInvalidate: () => void, outputPad: number) {
 		this.text = text;
 		this.theme = theme;
 		this.key = key;
 		this.requestInvalidate = requestInvalidate;
+		this.outputPad = outputPad;
 	}
 
 	render(width: number): string[] {
-		const label = new Text(this.theme.italic(this.theme.fg("thinkingText", "Thinking...")), 0, 0).render(width);
+		const text = this.theme.italic(this.theme.fg("thinkingText", DESIGN.thinking.rowLabel));
+		const label = new Text(text, this.outputPad, 0).render(width);
 		if (state.thinkingExpanded.get(this.key) !== true || this.text === "") return label;
-		const body = new Text(this.theme.italic(this.theme.fg("thinkingText", this.text)), 0, 0).render(width);
+		const body = new Text(this.theme.italic(this.theme.fg("thinkingText", this.text)), this.outputPad, 0).render(width);
 		return [...label, ...body];
 	}
 
@@ -426,12 +442,12 @@ class ThinkingRow implements Component {
 }
 
 /** 一条调用前面要补的思考行；末尾带一个空行，保证和条目行行距一致。 */
-function thinkingRows(callId: string, theme: Theme, requestInvalidate: () => void): Component[] {
+function thinkingRows(callId: string, theme: Theme, requestInvalidate: () => void, outputPad: number): Component[] {
 	const texts = state.thinkingByCall.get(callId);
 	if (!texts || texts.length === 0) return [];
 	const rows: Component[] = [];
 	texts.forEach((text, index) => {
-		rows.push(new ThinkingRow(text, theme, `${callId}:${index}`, requestInvalidate), new Spacer(1));
+		rows.push(new ThinkingRow(text, theme, `${callId}:${index}`, requestInvalidate, outputPad), new Spacer(1));
 	});
 	return rows;
 }
@@ -464,46 +480,19 @@ function nativeResult(base: any, result: unknown, options: unknown, theme: Theme
 	}
 }
 
-/** 把若干组件竖直拼接，用于“摘要行 + 首条自己的条目行 + 首条原生渲染”。 */
-class Column implements Component {
-	private readonly children: Component[];
-
-	constructor(children: Component[]) {
-		this.children = children;
-	}
-
-	render(width: number): string[] {
-		const lines: string[] = [];
-		for (const child of this.children) lines.push(...child.render(width));
-		return lines;
-	}
-
-	invalidate(): void {
-		for (const child of this.children) child.invalidate?.();
-	}
-
-	/** 按行高定位到具体子组件；没人处理就让外层 MouseRegion 接管（切换单条展开）。 */
-	handleMouse(event: { y?: number; width?: number }): unknown {
-		if (typeof event.y !== "number" || typeof event.width !== "number") return undefined;
-		let offset = 0;
-		for (const child of this.children) {
-			const height = child.render(event.width).length;
-			if (event.y < offset + height) {
-				const handler = child.handleMouse?.bind(child);
-				return handler ? handler({ ...event, y: event.y - offset }) : undefined;
-			}
-			offset += height;
-		}
-		return undefined;
-	}
+/** 竖直拼接若干组件；用 pi-tui 的 Container，不重复实现它的 render/invalidate/handleMouse。 */
+function stack(children: Component[]): Container {
+	const container = new Container();
+	for (const child of children) container.addChild(child);
+	return container;
 }
 
-function textOf(result: { content: Array<{ type: string; text?: string }> }, theme: Theme): Text {
+function textOf(result: { content: Array<{ type: string; text?: string }> }, theme: Theme, outputPad: number): Text {
 	const text = result.content
 		.filter((block) => block.type === "text")
 		.map((block) => block.text ?? "")
 		.join("\n");
-	return new Text(theme.fg("toolOutput", text), 0, 0);
+	return new Text(theme.fg("toolOutput", text), outputPad, 0);
 }
 
 /** 带文字的 assistant 消息给上一段封口，它之后的工具调用另起一条摘要。 */
@@ -689,36 +678,36 @@ export default function (pi: ExtensionAPI) {
 					// 历史导出等真正无法归段的调用才退回单条标签。
 					if (context.expanded) return nativeCall(base, args, theme, context) ?? new Container();
 					if (!context.argsComplete) return new Container();
-					const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}...`)), 0, 0);
+					const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
 					return label;
 				}
 
-				const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}...`)), 0, 0);
+				const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
 				const isLeader = run.leaderCallId === context.toolCallId;
 				// 首条的原生渲染也受本轮展开控制：否则收起摘要时它自己的输出会留在屏上
 				const native = context.expanded && (!isLeader || run.expanded) ? nativeCall(base, args, theme, context) : undefined;
 
 				if (isLeader) {
 					// 首条：摘要行常驻，展开后依次是思考行、它自己的条目行和原生渲染
-					const children: Component[] = [new TurnSummary(pi, run, theme, context.invalidate)];
+					const children: Component[] = [new TurnSummary(pi, run, theme, context.invalidate, context.outputPad)];
 					// 条目行的间距由内核自带的空行提供，首条在摘要下面，补同样的空行
 					if (run.expanded) {
-						children.push(new Spacer(1), ...thinkingRows(context.toolCallId, theme, context.invalidate), label);
+						children.push(new Spacer(1), ...thinkingRows(context.toolCallId, theme, context.invalidate, context.outputPad), label);
 					}
 					if (native) children.push(native);
-					return new Column(children);
+					return stack(children);
 				}
 
 				if (!run.expanded) return new Container();
-				const thinking = thinkingRows(context.toolCallId, theme, context.invalidate);
-				return thinking.length === 0 ? (native ?? label) : new Column([...thinking, native ?? label]);
+				const thinking = thinkingRows(context.toolCallId, theme, context.invalidate, context.outputPad);
+				return thinking.length === 0 ? (native ?? label) : stack([...thinking, native ?? label]);
 			},
 
 			renderResult(result, options, theme, context) {
 				if (!options.expanded) return new Container();
 				const run = state.runByCall.get(context.toolCallId);
 				if (run && !run.expanded) return new Container();
-				return nativeResult(base, result, options, theme, context) ?? textOf(result, theme);
+				return nativeResult(base, result, options, theme, context) ?? textOf(result, theme, context.outputPad);
 			},
 		};
 	});

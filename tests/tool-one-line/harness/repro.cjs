@@ -73,6 +73,7 @@ async function main() {
 	};
 	const ctx = {
 		toolCallId: "c1",
+		outputPad: 0,
 		expanded: true,
 		lastComponent: undefined,
 		invalidate: () => core.invalidate(),

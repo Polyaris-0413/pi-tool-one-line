@@ -41,6 +41,7 @@ await emit("tool_execution_start", { toolCallId: "c1", toolName: "bash" });
 
 const renderCtx = {
 	toolCallId: "c1",
+	outputPad: 0,
 	expanded: true,
 	argsComplete: true,
 	lastComponent: undefined,

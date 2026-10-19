@@ -33,6 +33,7 @@ const C = (id) => ({ type: "toolCall", id, name: "bash", arguments: { command: "
 const component = (callId, expanded = false) => {
 	const renderCtx = {
 		toolCallId: callId,
+		outputPad: 0,
 		expanded,
 		lastComponent: undefined,
 		invalidate() {},

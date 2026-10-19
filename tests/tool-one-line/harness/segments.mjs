@@ -33,6 +33,7 @@ async function install(branchEntries) {
 	const render = (callId) => {
 		const renderCtx = {
 			toolCallId: callId,
+			outputPad: 0,
 			expanded: true,
 			lastComponent: undefined,
 			invalidate() {},
