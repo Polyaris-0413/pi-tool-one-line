@@ -41,7 +41,7 @@ extensions, packages and skills therefore never load into the test session.
 
 | File | Checks |
 | --- | --- |
-| `suiteA.cjs` | expanding one summary shows its rows only; uniform row spacing; collapsing leaves nothing |
+| `suiteA.cjs` | expanding one summary shows its rows only; uniform row spacing; expanding does not change how many summaries exist; collapsing leaves nothing |
 | `suiteD.cjs` | a `Thinking...` row expands to its text and collapses again |
 | `suiteP.cjs` | expanding a bash row and collapsing the segment leaves no output rows |
 | `suiteL.cjs` | `/reload` keeps one blank line between a summary and the following text |
@@ -58,3 +58,8 @@ extensions, packages and skills therefore never load into the test session.
 
 Assertions are structural (row numbers, presence of text), not screen snapshots,
 so unrelated layout tweaks in Pi do not break them.
+
+The TUI suites deliberately do not assume how many segments the model produces:
+batching several calls without commentary between them is correct behavior, and
+is one row of summary either way. Segment boundaries are covered
+deterministically by `harness/segments.mjs` with synthetic messages.

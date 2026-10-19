@@ -46,5 +46,5 @@ child.onData((d) => term.write(d));
 	console.log("再点 Thinking 后其下:", JSON.stringify(collapsed));
 	console.log(process.exitCode ? "FAILED" : "PASS: Thinking 行可展开/收起");
 	try { child.kill(); } catch {}
-	setTimeout(() => process.exit(0), 800);
+	setTimeout(() => process.exit(process.exitCode ?? 0), 800);
 })();
