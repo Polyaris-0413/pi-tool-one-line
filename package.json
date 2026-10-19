@@ -1,0 +1,35 @@
+{
+	"name": "pi-tool-one-line",
+	"version": "1.0.0",
+	"description": "Fold pi's tool calls into one summary line per text segment, with two levels of expansion.",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"extension",
+		"tui"
+	],
+	"license": "GPL-3.0-only",
+	"author": "Polyaris-0413",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Polyaris-0413/pi-tool-one-line.git"
+	},
+	"homepage": "https://github.com/Polyaris-0413/pi-tool-one-line#readme",
+	"bugs": {
+		"url": "https://github.com/Polyaris-0413/pi-tool-one-line/issues"
+	},
+	"pi": {
+		"extensions": [
+			"./extensions/tool-one-line.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"files": [
+		"extensions",
+		"README.md",
+		"LICENSE"
+	]
+}

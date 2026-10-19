@@ -1,0 +1,50 @@
+const pty = require("node-pty");
+const { Terminal } = require("@xterm/headless");
+const cols = 200, rows = 50;
+const term = new Terminal({ cols, rows, allowProposedApi: true });
+const shell = process.env.COMSPEC || "cmd.exe";
+const { env, piArgs } = require("./env.cjs");
+const child = pty.spawn(shell, piArgs(["--no-session"]), { name: "xterm-256color", cols, rows, cwd: __dirname, env });
+const screen = () => { const b = term.buffer.active, o = []; for (let y = 0; y < rows; y++) { const l = b.getLine(b.baseY + y); o.push(l ? l.translateToString(true) : ""); } return o; };
+const dump = (label) => { console.log(`=== ${label} ===`); screen().forEach((l, i) => console.log(String(i).padStart(2) + "|" + l.replace(/\s+$/, "").slice(0, 110))); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const isSummary = (l) => /Thinking ×|\bBash ×|\bRead ×/.test(l);
+const click = (row) => { child.write(`\x1b[<0;3;${row + 1}M`); setTimeout(() => child.write(`\x1b[<0;3;${row + 1}m`), 40); };
+const fail = (m) => { console.log("FAIL:", m); process.exitCode = 1; };
+child.onData((d) => term.write(d));
+(async () => {
+	await wait(6000);
+	child.write("请读取 tui.cjs 文件的前 3 行，然后再运行 date，最后总结一句。\r");
+	let stable = 0, last = "";
+	for (let i = 0; i < 500; i++) {
+		await wait(150);
+		const t = screen().join("\n");
+		if (t === last) stable++; else stable = 0;
+		last = t;
+		if (screen().some(isSummary) && stable >= 25) break;
+	}
+	let lines = screen();
+	const s = lines.findIndex(isSummary);
+	console.log("摘要行:", s, JSON.stringify(lines[s]));
+	click(s);
+	await wait(1200);
+	lines = screen();
+	dump("展开后");
+	const firstNonBlank = (() => { for (let i = s + 1; i < rows; i++) if (lines[i].trim() !== "") return i; return -1; })();
+	console.log("摘要后首个非空行:", firstNonBlank, JSON.stringify(lines[firstNonBlank]));
+	if (!/Thinking\.\.\.$/.test((lines[firstNonBlank] || "").trim())) fail("摘要下应先是 Thinking... 行");
+	click(firstNonBlank);
+	await wait(1200);
+	lines = screen();
+	const after = lines.slice(firstNonBlank + 1, firstNonBlank + 6);
+	console.log("点击 Thinking 后其下:", JSON.stringify(after));
+	if (after.filter((l) => l.trim() !== "").length < 2) fail("点击 Thinking 后应显示思考正文");
+	click(firstNonBlank);
+	await wait(1200);
+	lines = screen();
+	const collapsed = lines.slice(firstNonBlank + 1, firstNonBlank + 4).filter((l) => l.trim() !== "");
+	console.log("再点 Thinking 后其下:", JSON.stringify(collapsed));
+	console.log(process.exitCode ? "FAILED" : "PASS: Thinking 行可展开/收起");
+	try { child.kill(); } catch {}
+	setTimeout(() => process.exit(0), 800);
+})();

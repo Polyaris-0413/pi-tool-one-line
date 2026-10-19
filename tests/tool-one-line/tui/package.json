@@ -1,0 +1,10 @@
+{
+  "name": "tool-one-line-tui-tests",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Real-TUI regression tests for the tool-one-line pi extension",
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "@xterm/headless": "^5.5.0"
+  }
+}
