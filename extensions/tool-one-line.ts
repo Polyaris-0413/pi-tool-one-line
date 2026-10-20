@@ -8,13 +8,14 @@
  *   `Thinking ×9 · Bash ×6 · Edit ×3 · 12.4s`
  *   其余调用整行不占高度（self 外壳 + 空内容 = 0 行，工具块自带的空行也一并消失）。
  * 第 1 级：点摘要行 → 本段每个工具显示一行标签（`Bash...` / `Edit...`）。
- * 第 2 级：点某条标签 → 只有这一条换成内置渲染，命令、输出、diff、计时器与平时一致。
+ * 第 2 级：点某条标签 → 只有这一条换成内置渲染，命令、输出、diff、计时器与平时一致；
+ *   标签本身被替换掉，不再残留类型行。首条、非首条与思考行都按这一条规则渲染。
  *
  * 折叠的思考块由内核绘制，其标签被置空后只剩 ANSI 序列，`Text` 的空值判断
  * （`text.trim() === ""`）不成立，会让每条思考白占一行；见 patchEmptyThemeText。
  * 标签被压成 0 行后，内核仍会在消息开头和思考块后面留 `Spacer(1)`；内容不可见的消息
  * 会因此白占一行，见 patchContainerSpacers。
- * 思考在摘要里计数；展开某段后，属于该段的思考各占一行 `Thinking...`，点它展开正文。
+ * 思考在摘要里计数；展开某段后，属于该段的思考各占一行 `Thinking...`，点它把标签换成正文。
  *
  * 只注册渲染器，不重注册工具：`execute`、`description`、`parameters`、
  * 输出截断策略都留在内核手里，模型收到的 `result.content` 与未安装本扩展时完全一致。
@@ -455,7 +456,7 @@ class TurnSummary implements Component {
 	}
 }
 
-/** 展开后条目列表里的思考行；点一下展开该段思考正文，正文沿用内核的 thinkingText token。 */
+/** 展开后条目列表里的思考行；点一下把 `Thinking...` 换成该段思考正文，正文沿用内核的 thinkingText token。 */
 class ThinkingRow implements Component {
 	private readonly text: string;
 	private readonly theme: Theme;
@@ -472,11 +473,12 @@ class ThinkingRow implements Component {
 	}
 
 	render(width: number): string[] {
-		const text = this.theme.italic(this.theme.fg("thinkingText", DESIGN.thinking.rowLabel));
-		const label = new Text(text, this.outputPad, 0).render(width);
-		if (state.thinkingExpanded.get(this.key) !== true || this.text === "") return label;
-		const body = new Text(this.theme.italic(this.theme.fg("thinkingText", this.text)), this.outputPad, 0).render(width);
-		return [...label, ...body];
+		// 二级展开统一为「标签换成正文」：展开后不再保留 Thinking... 标签
+		if (state.thinkingExpanded.get(this.key) === true && this.text !== "") {
+			return new Text(this.theme.italic(this.theme.fg("thinkingText", this.text)), this.outputPad, 0).render(width);
+		}
+		const label = this.theme.italic(this.theme.fg("thinkingText", DESIGN.thinking.rowLabel));
+		return new Text(label, this.outputPad, 0).render(width);
 	}
 
 	invalidate(): void {}
@@ -745,21 +747,22 @@ export default function (pi: ExtensionAPI) {
 				const isLeader = run.leaderCallId === context.toolCallId;
 				// 首条的原生渲染也受本轮展开控制：否则收起摘要时它自己的输出会留在屏上
 				const native = context.expanded && (!isLeader || run.expanded) ? nativeCall(base, args, theme, context, toolName) : undefined;
+				// 二级展开统一为「标签换成正文」：有原生渲染就用它顶替标签，首条与非首条同一套规则
+				const entry = native ?? label;
 
 				if (isLeader) {
-					// 首条：摘要行常驻，展开后依次是思考行、它自己的条目行和原生渲染
+					// 首条：摘要行常驻，展开后依次是思考行和它自己的条目行
 					const children: Component[] = [new TurnSummary(pi, run, theme, context.invalidate, context.outputPad)];
 					// 条目行的间距由内核自带的空行提供，首条在摘要下面，补同样的空行
 					if (run.expanded) {
-						children.push(new Spacer(1), ...thinkingRows(context.toolCallId, theme, context.invalidate, context.outputPad), label);
+						children.push(new Spacer(1), ...thinkingRows(context.toolCallId, theme, context.invalidate, context.outputPad), entry);
 					}
-					if (native) children.push(native);
 					return stack(children);
 				}
 
 				if (!run.expanded) return new Container();
 				const thinking = thinkingRows(context.toolCallId, theme, context.invalidate, context.outputPad);
-				return thinking.length === 0 ? (native ?? label) : stack([...thinking, native ?? label]);
+				return thinking.length === 0 ? entry : stack([...thinking, entry]);
 			},
 
 			renderResult(result, options, theme, context) {

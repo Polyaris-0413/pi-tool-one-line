@@ -27,6 +27,7 @@ installation, or `PI_PACKAGE_ROOT`), because Pi loads extensions through jiti.
 | `user-message.mjs` | a user message stays one solid block: blank lines keep their background; empty decorations still collapse |
 | `segments.mjs` | segments split on assistant text; live and replayed state agree |
 | `streaming.mjs` | calls are attributed while streaming, so no placeholder row appears first |
+| `expand-levels.mjs` | level-2 expansion replaces the type label with the content, for leaders, non-leaders and thinking rows alike |
 | `turns.mjs` | one turn's trailing thinking is not attached to the next turn |
 | `repro.cjs` | clicking a summary cannot recurse through invalidation |
 | `lastcomponent.mjs` | built-in renderers get their own `lastComponent` back |
