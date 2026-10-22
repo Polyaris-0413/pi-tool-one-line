@@ -316,6 +316,11 @@ function patchEmptyThemeText(): void {
  * - 紧跟 0 行兄弟的 Spacer（隐藏思考块后面那个）；
  * - 整个容器只渲染出一行空白、且第一块是 Spacer（整条消息都不可见）。
  * 有可见内容时的间距保持内核原样。
+ *
+ * 只对助手消息的内容容器生效：对话层（`chatContainer`）里那条 `Spacer(1)` 是内核给
+ * 相邻消息之间的分隔，而一段折叠工具调用最后那条的行恰是 0 行，按「前一块 0 行就丢」
+ * 一律处理会把用户消息上方的分隔空行也吞掉，于是同一行摘要在用户消息上下两侧
+ * 离消息的距离不一样。
  */
 interface ContainerPrototype {
 	children: Component[];
@@ -328,32 +333,48 @@ function isSpacer(component: Component): boolean {
 	return component instanceof Spacer || component?.constructor?.name === "Spacer";
 }
 
+/** 正在渲染的容器栈：内核不暴露父子关系，靠它认出「助手消息的内容容器」。 */
+const rendering: ContainerPrototype[] = [];
+
+/** 助手消息组件持有 `contentContainer` 与 `updateContent`，两者都核对才算数。 */
+function isAssistantContentContainer(container: ContainerPrototype, parent: ContainerPrototype | undefined): boolean {
+	const owner = parent as (ContainerPrototype & { contentContainer?: unknown; updateContent?: unknown }) | undefined;
+	return owner?.contentContainer === container && typeof owner.updateContent === "function";
+}
+
 function patchContainerSpacers(proto: ContainerPrototype): void {
 	if (proto.spacerPatchApplied) return;
 	const originalRender = proto.render;
 	proto.render = function (this: ContainerPrototype, width: number): string[] {
 		// 主题实例可能刚被 /reload 换掉，先在子组件渲染前把补丁兑现
 		patchEmptyThemeText();
-		const children = this.children;
-		const dropped: number[] = [];
-		for (let i = 1; i < children.length; i++) {
-			if (isSpacer(children[i]) && children[i - 1].render(width).length === 0) dropped.push(i);
-		}
-		if (dropped.length > 0) this.children = children.filter((_, index) => !dropped.includes(index));
+		const parent = rendering[rendering.length - 1];
+		rendering.push(this);
 		try {
-			const lines = originalRender.call(this, width);
-			if (
-				dropped.length === 0 &&
-				children.length > 1 &&
-				lines.length === 1 &&
-				lines[0].trim() === "" &&
-				isSpacer(children[0])
-			) {
-				return [];
+			if (!isAssistantContentContainer(this, parent)) return originalRender.call(this, width);
+			const children = this.children;
+			const dropped: number[] = [];
+			for (let i = 1; i < children.length; i++) {
+				if (isSpacer(children[i]) && children[i - 1].render(width).length === 0) dropped.push(i);
 			}
-			return lines;
+			if (dropped.length > 0) this.children = children.filter((_, index) => !dropped.includes(index));
+			try {
+				const lines = originalRender.call(this, width);
+				if (
+					dropped.length === 0 &&
+					children.length > 1 &&
+					lines.length === 1 &&
+					lines[0].trim() === "" &&
+					isSpacer(children[0])
+				) {
+					return [];
+				}
+				return lines;
+			} finally {
+				this.children = children;
+			}
 		} finally {
-			this.children = children;
+			rendering.pop();
 		}
 	};
 	proto.spacerPatchApplied = true;

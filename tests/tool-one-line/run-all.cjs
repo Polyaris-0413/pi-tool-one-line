@@ -22,8 +22,9 @@ const TUI = path.join(TESTS, "tui");
 const wantTui = process.argv.includes("--tui");
 const wantReload = process.argv.includes("--with-reload");
 
-const HARNESS = ["thinking-only.mjs", "user-message.mjs", "segments.mjs", "streaming.mjs", "turns.mjs", "expand-levels.mjs", "repro.cjs", "lastcomponent.mjs", "fuzz.mjs"];
+const HARNESS = ["thinking-only.mjs", "user-message.mjs", "separators.mjs", "segments.mjs", "streaming.mjs", "turns.mjs", "expand-levels.mjs", "repro.cjs", "lastcomponent.mjs", "fuzz.mjs"];
 const TUI_SUITES = [
+	{ file: "suiteS.cjs", name: "用户消息上下的间距" },
 	{ file: "suiteA.cjs", name: "展开/收回与行距" },
 	{ file: "suiteD.cjs", name: "Thinking 行展开/收回" },
 	{ file: "suiteP.cjs", name: "Bash 展开后收回不留残行" },

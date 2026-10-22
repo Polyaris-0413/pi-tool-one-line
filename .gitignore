@@ -2,3 +2,4 @@ node_modules/
 tmp/
 *.log
 history-synthetic.jsonl
+history-spacing.jsonl

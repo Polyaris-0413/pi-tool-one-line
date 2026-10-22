@@ -25,6 +25,7 @@ installation, or `PI_PACKAGE_ROOT`), because Pi loads extensions through jiti.
 | --- | --- |
 | `thinking-only.mjs` | message shapes that render zero rows, and the ones that keep one blank line |
 | `user-message.mjs` | a user message stays one solid block: blank lines keep their background; empty decorations still collapse |
+| `separators.mjs` | the blank line the kernel puts before a user message survives a collapsed tool row; blank lines inside an assistant message are still dropped |
 | `segments.mjs` | segments split on assistant text; live and replayed state agree |
 | `streaming.mjs` | calls are attributed while streaming, so no placeholder row appears first |
 | `expand-levels.mjs` | level-2 expansion replaces the type label with the content, for leaders, non-leaders and thinking rows alike |
@@ -43,6 +44,7 @@ extensions, packages and skills therefore never load into the test session.
 
 | File | Checks |
 | --- | --- |
+| `suiteS.cjs` | the summary above and below a user message sit at the same distance (synthetic session, no model call) |
 | `suiteA.cjs` | expanding one summary shows its rows only; uniform row spacing; expanding does not change how many summaries exist; collapsing leaves nothing |
 | `suiteD.cjs` | a `Thinking...` row expands to its text and collapses again |
 | `suiteP.cjs` | expanding a bash row and collapsing the segment leaves no output rows |
