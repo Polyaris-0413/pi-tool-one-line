@@ -81,6 +81,7 @@ interface RunState {
 	/** 内核自带渲染器上次返回的组件：它们会复用 lastComponent（bash 直接 setText）。 */
 	baseCallByCall: Map<string, Component>;
 	baseResultByCall: Map<string, Component>;
+	/** 工具名 -> 是否核心工具。只在事件路径写入，渲染路径只读（见 labelOf）。 */
 	coreByTool: Map<string, boolean>;
 	ctx?: ExtensionContext;
 	/** 内核 TUI 实例：折叠/展开后强制全量重绘，清除终端里残留的旧行。 */
@@ -150,20 +151,44 @@ function reportOnce(key: string, reason: string, error?: unknown): void {
  * 核心工具由内核注册，`sourceInfo.path` 恰好是 `builtin:<工具名>`
  * （`dist/core/agent-session.js` 的 `_refreshToolRegistry`）。
  * 扩展、MCP、SDK 工具不满足该等式，因此不需要维护名单。
+ *
+ * 工具清单只在事件路径读取：`pi` 属于发起它的那个会话，会话被替换或 reload 后
+ * 会被内核永久置为 stale（`dist/core/extensions/loader.js` 的 `assertActive`，
+ * 置位点是 `AgentSession.dispose()` / `reload()`），而渲染回调的生命周期比会话长，
+ * 换会话时旧行仍可能被画一帧。渲染路径只查这里预先记下的结果。
  */
-function labelOf(pi: ExtensionAPI, toolName: string): string {
-	const cached = state.coreByTool.get(toolName);
-	if (cached !== undefined) return cached ? titleOf(toolName) : DESIGN.otherToolLabel;
-	let core = true;
+function labelOf(toolName: string): string {
+	const core = state.coreByTool.get(toolName);
+	// 清单里查不到（快照后新注册、或快照失败）时按核心工具处理：
+	// 显示自身名字比压成同一个词更不容易误导
+	if (core === undefined) return titleOf(toolName);
+	return core ? titleOf(toolName) : DESIGN.otherToolLabel;
+}
+
+/** 会话开始时整表快照。此刻 `pi` 必定属于当前会话，之后渲染不再碰它。 */
+function snapshotToolKinds(pi: ExtensionAPI): void {
+	try {
+		state.coreByTool.clear();
+		for (const tool of pi.getAllTools()) {
+			state.coreByTool.set(tool.name, tool.sourceInfo?.path === `builtin:${tool.name}`);
+		}
+	} catch {
+		// 清单不可用就留空：labelOf 退回显示自身名字，不影响布局
+	}
+}
+
+/** 快照之后才出现的工具（延迟连接的 MCP、运行时注册的扩展工具）：在事件路径补记一次。 */
+function rememberToolKind(pi: ExtensionAPI, toolName: string): boolean {
+	if (state.coreByTool.has(toolName)) return false;
 	try {
 		const info = pi.getAllTools().find((tool) => tool.name === toolName);
-		core = info?.sourceInfo.path === `builtin:${toolName}`;
-	} catch (error) {
-		// 拿不到工具清单时按核心工具处理：显示自身名字比压成同一个词更不容易误导
-		reportOnce("tools", "读不到工具清单，核心工具按名字显示", error);
+		if (!info) return false;
+		state.coreByTool.set(toolName, info.sourceInfo?.path === `builtin:${toolName}`);
+		return true;
+	} catch {
+		// 拿不到就先不记，下一次事件再试
+		return false;
 	}
-	state.coreByTool.set(toolName, core);
-	return core ? titleOf(toolName) : DESIGN.otherToolLabel;
 }
 
 function titleOf(toolName: string): string {
@@ -242,7 +267,7 @@ function attachThinking(calls: Array<{ id: string }>): void {
 }
 
 /** 摘要行末尾的耗时算到本段真正结束（下一条文字出现或本轮结束），而不是最后一条工具结束。 */
-function summaryText(pi: ExtensionAPI, run: Run, theme: Theme): string {
+function summaryText(run: Run, theme: Theme): string {
 	const parts: string[] = [];
 	// 计数直接来自已挂到调用行上的思考正文：摘要与展开列表不会对不上
 	const thinkingRows = run.callIds.reduce((sum, callId) => sum + (state.thinkingByCall.get(callId)?.length ?? 0), 0);
@@ -252,7 +277,7 @@ function summaryText(pi: ExtensionAPI, run: Run, theme: Theme): string {
 	}
 	const counts = new Map<string, number>();
 	for (const toolName of run.toolNames) {
-		const label = labelOf(pi, toolName);
+		const label = labelOf(toolName);
 		counts.set(label, (counts.get(label) ?? 0) + 1);
 	}
 	for (const [label, count] of counts) {
@@ -444,15 +469,13 @@ function syncThinkingLabel(): void {
 }
 
 class TurnSummary implements Component {
-	private readonly pi: ExtensionAPI;
 	private readonly run: Run;
 	private readonly theme: Theme;
 	private readonly outputPad: number;
 	/** 内核注入的重绘入口；不能叫 invalidate，否则会覆盖组件生命周期方法并形成失效递归。 */
 	private readonly requestInvalidate: () => void;
 
-	constructor(pi: ExtensionAPI, run: Run, theme: Theme, requestInvalidate: () => void, outputPad: number) {
-		this.pi = pi;
+	constructor(run: Run, theme: Theme, requestInvalidate: () => void, outputPad: number) {
 		this.run = run;
 		this.theme = theme;
 		this.requestInvalidate = requestInvalidate;
@@ -460,7 +483,7 @@ class TurnSummary implements Component {
 	}
 
 	render(width: number): string[] {
-		return new Text(summaryText(this.pi, this.run, this.theme), this.outputPad, 0).render(width);
+		return new Text(summaryText(this.run, this.theme), this.outputPad, 0).render(width);
 	}
 
 	invalidate(): void {}
@@ -673,6 +696,8 @@ export default function (pi: ExtensionAPI) {
 		state.ctx = ctx;
 		// 先清空上一会话的残留，再打补丁：补丁失败时的提示不会随即被清掉
 		reconstructRuns(ctx);
+		// 必须在 reconstructRuns 之后：它会清空上一会话的工具名单
+		snapshotToolKinds(pi);
 		patchCoreContainer(ctx);
 		syncThinkingLabel();
 	});
@@ -729,11 +754,16 @@ export default function (pi: ExtensionAPI) {
 			addThinking(thinkingTextOf(event.message));
 		}
 		const calls = toolCallsOf(event.message);
-		for (const call of calls) startCall(call.id, call.name);
+		for (const call of calls) {
+			// 流式阶段可能已按默认标签画过这一行，补记后重绘一次
+			if (rememberToolKind(pi, call.name)) state.invalidateByCall.get(call.id)?.();
+			startCall(call.id, call.name);
+		}
 		attachThinking(calls);
 	});
 
 	pi.on("tool_execution_start", async (event) => {
+		rememberToolKind(pi, event.toolName);
 		startCall(event.toolCallId, event.toolName);
 		// 内核可能在我们的处理器之前就建好了行，重绘一次让首条立即变成摘要
 		state.invalidateByCall.get(event.toolCallId)?.();
@@ -760,11 +790,11 @@ export default function (pi: ExtensionAPI) {
 					// 历史导出等真正无法归段的调用才退回单条标签。
 					if (context.expanded) return nativeCall(base, args, theme, context, toolName) ?? new Container();
 					if (!context.argsComplete) return new Container();
-					const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
+					const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
 					return label;
 				}
 
-				const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(pi, toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
+				const label = new Text(theme.italic(theme.fg("thinkingText", `${labelOf(toolName)}${DESIGN.toolLabelSuffix}`)), context.outputPad, 0);
 				const isLeader = run.leaderCallId === context.toolCallId;
 				// 首条的原生渲染也受本轮展开控制：否则收起摘要时它自己的输出会留在屏上
 				const native = context.expanded && (!isLeader || run.expanded) ? nativeCall(base, args, theme, context, toolName) : undefined;
@@ -773,7 +803,7 @@ export default function (pi: ExtensionAPI) {
 
 				if (isLeader) {
 					// 首条：摘要行常驻，展开后依次是思考行和它自己的条目行
-					const children: Component[] = [new TurnSummary(pi, run, theme, context.invalidate, context.outputPad)];
+					const children: Component[] = [new TurnSummary(run, theme, context.invalidate, context.outputPad)];
 					// 条目行的间距由内核自带的空行提供，首条在摘要下面，补同样的空行
 					if (run.expanded) {
 						children.push(new Spacer(1), ...thinkingRows(context.toolCallId, theme, context.invalidate, context.outputPad), entry);
